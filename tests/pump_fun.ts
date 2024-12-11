@@ -1,55 +1,95 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { PumpFun } from "../target/types/pump_fun";
+import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { SystemProgram } from "@solana/web3.js";
+import { assert } from "chai";
 
-describe("pump_fun", () => {
-  // Configure the client to use the local cluster.
+describe("PumpFun Token Program", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
 
   const program = anchor.workspace.PumpFun as Program<PumpFun>;
+  
+  // Test accounts
+  let tokenMint: anchor.web3.PublicKey;
+  let tokenMetadata: anchor.web3.PublicKey;
+  let bondingCurve: anchor.web3.PublicKey;
+  let programConfig: anchor.web3.PublicKey;
+  let feeCollector: anchor.web3.Keypair;
 
-  it("Can create a new token", async () => {
-    // Generate a new keypair for the token mint
-    const tokenMint = anchor.web3.Keypair.generate();
+  // Test data
+  const TOKEN_NAME = "Test Token";
+  const TOKEN_SYMBOL = "TEST";
+  const TOKEN_DESCRIPTION = "Test Description";
+  const TOKEN_IMAGE = "https://picsum.photos/id/237/200/300";
+  const INITIAL_SUPPLY = new anchor.BN(1_000_000);
 
-    // Derive PDA for token metadata
-    const [tokenMetadataKey] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("metadata"), tokenMint.publicKey.toBuffer()],
+  before(async () => {
+    // Generate necessary keypairs
+    feeCollector = anchor.web3.Keypair.generate();
+    
+    // Initialize program config
+    const programConfigKeypair = anchor.web3.Keypair.generate();
+    programConfig = programConfigKeypair.publicKey;
+    
+    await program.methods
+      .initializeProgramConfig(
+        feeCollector.publicKey,
+        provider.wallet.publicKey
+      )
+      .accounts({
+        authority: provider.wallet.publicKey,
+        programConfig: programConfig,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([programConfigKeypair])
+      .rpc();
+  });
+
+  it("Creates a new token with correct metadata", async () => {
+    // Generate token mint
+    const mintKeypair = anchor.web3.Keypair.generate();
+    tokenMint = mintKeypair.publicKey;
+
+    // Derive PDAs
+    [tokenMetadata] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("metadata"), tokenMint.toBuffer()],
       program.programId
     );
 
-    // Derive PDA for bonding curve
-    const [bondingCurveKey] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("curve"), tokenMint.publicKey.toBuffer()],
+    [bondingCurve] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("curve"), tokenMint.toBuffer()],
       program.programId
     );
 
-    try {
-      const tx = await program.methods
-        .createToken(
-          "Test Token",      // name
-          "TEST",           // symbol
-          "Test Description", // description
-          "https://example.com/image.png", // image_url
-          new anchor.BN(1000000) // initial_supply
-        )
-        .accounts({
-          authority: provider.wallet.publicKey,
-          tokenMint: tokenMint.publicKey,
-          tokenMetadata: tokenMetadataKey,
-          bondingCurve: bondingCurveKey,
-          tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
-          systemProgram: anchor.web3.SystemProgram.programId,
-          rent: anchor.web3.SYSVAR_RENT_PUBKEY,
-        })
-        .signers([tokenMint])
-        .rpc();
+    await program.methods
+      .createToken(
+        TOKEN_NAME,
+        TOKEN_SYMBOL,
+        TOKEN_DESCRIPTION,
+        TOKEN_IMAGE,
+        INITIAL_SUPPLY
+      )
+      .accounts({
+        authority: provider.wallet.publicKey,
+        programConfig: programConfig,
+        tokenMint: tokenMint,
+        tokenMetadata: tokenMetadata,
+        bondingCurve: bondingCurve,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+      })
+      .signers([mintKeypair])
+      .rpc();
 
-      console.log("Transaction signature:", tx);
-    } catch (error) {
-      console.error("Error:", error);
-      throw error;
-    }
+    // Verify metadata
+    const metadata = await program.account.tokenMetadata.fetch(tokenMetadata);
+    assert.equal(metadata.name, TOKEN_NAME);
+    assert.equal(metadata.symbol, TOKEN_SYMBOL);
+    assert.equal(metadata.description, TOKEN_DESCRIPTION);
+    assert.equal(metadata.imageUrl, TOKEN_IMAGE);
+    assert.ok(metadata.creator.equals(provider.wallet.publicKey));
   });
 });
